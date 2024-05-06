@@ -15,5 +15,7 @@
   ·
   <a href="https://gethinode.com">Docs</a>
   ·
+  <a href="https://github.com/gethinode/hinode/issues">Issues</a>
+  ·
   <a href="https://github.com/gethinode/hinode/discussions">Discussions</a>
 </p>
