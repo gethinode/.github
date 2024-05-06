@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  Hinode is a clean documentation and blog theme for your [Hugo](https://gohugio.io) site based on [Bootstrap 5](https://getbootstrap.com).
+  Hinode is a clean documentation and blog theme for your <a href="https://gohugio.io">Hugo</a> site based on <a href="https://getbootstrap.com">Bootstrap 5</a>.
 </p>
 
 <p align="center">
