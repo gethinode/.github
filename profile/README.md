@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://gethinode.com/">
-    <img src="https://raw.githubusercontent.com/gethinode/hinode/main/static/img/logo.png" alt="Hinode logo" width="600" height="164">
+    <img src="https://raw.githubusercontent.com/gethinode/hinode/main/static/img/logo.png" alt="Hinode logo" width="600" height="164" style="object-fit: cover">
   </a>
 </p>
 
