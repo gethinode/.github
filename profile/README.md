@@ -21,5 +21,5 @@
   ·
   <a href="https://github.com/orgs/gethinode/repositories?q=props.category%3Amodule">Modules</a>
   ·
-  <a href="https://github.com/orgs/gethinode/repositories?q=props.category%utility">Utilities</a>
+  <a href="https://github.com/orgs/gethinode/repositories?q=props.category%3Autility">Utilities</a>
 </p>
