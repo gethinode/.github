@@ -11,6 +11,9 @@ on:
       node-matrix:
         type: string
         default: '["22.x","24.x"]'
+      dart-sass-version:
+        type: string
+        default: "1.98.0"
 permissions:
   contents: read
 jobs:
@@ -27,6 +30,28 @@ jobs:
         with:
           package-manager: ${{ inputs.package-manager }}
           node-version: ${{ matrix.node-version }}
+      # Some module exampleSites transpile SCSS via Dart Sass (Hinode v2). Install it
+      # so those builds pass; a no-op cost for modules that don't need it.
+      - name: Install Dart Sass
+        env:
+          DART_SASS_VERSION: ${{ inputs.dart-sass-version }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            curl -fsSL "https://github.com/sass/dart-sass/releases/download/${DART_SASS_VERSION}/dart-sass-${DART_SASS_VERSION}-linux-x64.tar.gz" | tar -xz -C "$HOME"
+            echo "$HOME/dart-sass" >> $GITHUB_PATH
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            ARCH=$(uname -m)
+            if [ "$ARCH" == "arm64" ]; then
+              SASS_ARCH="macos-arm64"
+            else
+              SASS_ARCH="macos-x64"
+            fi
+            curl -fsSL "https://github.com/sass/dart-sass/releases/download/${DART_SASS_VERSION}/dart-sass-${DART_SASS_VERSION}-${SASS_ARCH}.tar.gz" | tar -xz -C "$HOME"
+            echo "$HOME/dart-sass" >> $GITHUB_PATH
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            choco install sass
+          fi
       - name: Run tests
         shell: bash
         run: ${{ inputs.package-manager }} run test
