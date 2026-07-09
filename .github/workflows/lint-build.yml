@@ -40,6 +40,7 @@ jobs:
   build:
     needs: lint
     strategy:
+      fail-fast: false
       matrix:
         os: ${{ fromJSON(inputs.os-matrix) }}
         node-version: ${{ fromJSON(inputs.node-matrix) }}
@@ -87,9 +88,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.HUGO_CACHEDIR }}
-          key: ${{ runner.os }}-${{ inputs.cache-key }}-${{ github.run_id }}
+          key: ${{ runner.os }}-node${{ matrix.node-version }}-${{ inputs.cache-key }}-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-${{ inputs.cache-key }}-
+            ${{ runner.os }}-node${{ matrix.node-version }}-${{ inputs.cache-key }}-
       - name: Build
         shell: bash
         run: ${{ inputs.build-command }}
