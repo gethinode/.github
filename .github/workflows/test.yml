@@ -16,6 +16,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         os: ${{ fromJSON(inputs.os-matrix) }}
         node-version: ${{ fromJSON(inputs.node-matrix) }}
