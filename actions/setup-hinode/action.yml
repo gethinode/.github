@@ -24,6 +24,14 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
         cache: ${{ inputs.package-manager }}
+    # Windows only: Hugo cannot spawn pnpm's isolated postcss bin shim. A
+    # hoisted (npm-style flat) node_modules restores the layout Hugo accepts.
+    # Linux/macOS keep the strict isolated layout (phantom-dep protection).
+    # Harmless for repos without PostCSS.
+    - name: Use hoisted node-linker on Windows
+      if: ${{ inputs.package-manager == 'pnpm' && runner.os == 'Windows' }}
+      shell: bash
+      run: echo "npm_config_node_linker=hoisted" >> "$GITHUB_ENV"
     - name: Install dependencies
       shell: bash
       run: |
