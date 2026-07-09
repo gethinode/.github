@@ -1,0 +1,31 @@
+name: Test (reusable)
+on:
+  workflow_call:
+    inputs:
+      package-manager:
+        type: string
+        default: pnpm
+      os-matrix:
+        type: string
+        default: '["ubuntu-latest","macos-latest","windows-latest"]'
+      node-matrix:
+        type: string
+        default: '["22.x","24.x"]'
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: ${{ fromJSON(inputs.os-matrix) }}
+        node-version: ${{ fromJSON(inputs.node-matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: gethinode/.github/actions/setup-hinode@v1
+        with:
+          package-manager: ${{ inputs.package-manager }}
+          node-version: ${{ matrix.node-version }}
+      - name: Run tests
+        shell: bash
+        run: ${{ inputs.package-manager }} run test
