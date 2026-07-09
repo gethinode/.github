@@ -1,0 +1,31 @@
+name: Update modules (reusable)
+on:
+  workflow_call:
+    inputs:
+      package-manager:
+        type: string
+        default: pnpm
+    secrets:
+      SEMANTIC_RELEASE_GIT:
+        required: true
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: gethinode/.github/actions/setup-hinode@v1
+        with:
+          package-manager: ${{ inputs.package-manager }}
+      - name: Update Hugo modules
+        shell: bash
+        run: ${{ inputs.package-manager }} run mod:update
+      - name: Create pull request
+        uses: gethinode-actions/create-pull-request@v8
+        with:
+          token: ${{ secrets.SEMANTIC_RELEASE_GIT }}
+          commit-message: "fix: update Hugo module dependencies"
+          title: "Update Hugo module dependencies"
+          branch: update-hugo-modules

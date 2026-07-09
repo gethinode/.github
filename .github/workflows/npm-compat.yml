@@ -1,0 +1,26 @@
+name: npm compatibility (reusable)
+on:
+  workflow_call:
+    inputs:
+      build-script:
+        type: string
+        default: build:example
+permissions:
+  contents: read
+jobs:
+  npm-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ">1.0.0"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22.x"
+      - name: Clean npm install (no lockfile — real consumer path)
+        shell: bash
+        run: npm install
+      - name: Build with npm
+        shell: bash
+        run: npm run ${{ inputs.build-script }}

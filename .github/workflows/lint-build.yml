@@ -1,0 +1,95 @@
+name: Lint & build (reusable)
+on:
+  workflow_call:
+    inputs:
+      package-manager:
+        type: string
+        default: pnpm
+      dart-sass-version:
+        type: string
+        default: "1.98.0"
+      os-matrix:
+        type: string
+        default: '["ubuntu-latest","macos-latest","windows-latest"]'
+      node-matrix:
+        type: string
+        default: '["22.x","24.x"]'
+      lint-script:
+        type: string
+        default: lint
+      build-command:
+        type: string
+        default: pnpm run build:cache
+      cache-key:
+        type: string
+        default: hugo-build
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: gethinode/.github/actions/setup-hinode@v1
+        with:
+          package-manager: ${{ inputs.package-manager }}
+      - name: Lint
+        shell: bash
+        run: ${{ inputs.package-manager }} run ${{ inputs.lint-script }}
+  build:
+    needs: lint
+    strategy:
+      matrix:
+        os: ${{ fromJSON(inputs.os-matrix) }}
+        node-version: ${{ fromJSON(inputs.node-matrix) }}
+        include:
+          - os: ubuntu-latest
+            hugo_cachedir: '/tmp/hugo_cache_runner'
+          - os: macos-latest
+            hugo_cachedir: '/Users/runner/Library/Caches/hugo_cache'
+          - os: windows-latest
+            hugo_cachedir: '~\AppData\Local\hugo_cache'
+    runs-on: ${{ matrix.os }}
+    env:
+      HUGO_CACHEDIR: ${{ matrix.hugo_cachedir }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: gethinode/.github/actions/setup-hinode@v1
+        with:
+          package-manager: ${{ inputs.package-manager }}
+          node-version: ${{ matrix.node-version }}
+      - name: Install Dart Sass
+        env:
+          DART_SASS_VERSION: ${{ inputs.dart-sass-version }}
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            curl -fsSL "https://github.com/sass/dart-sass/releases/download/${DART_SASS_VERSION}/dart-sass-${DART_SASS_VERSION}-linux-x64.tar.gz" | tar -xz -C "$HOME"
+            echo "$HOME/dart-sass" >> $GITHUB_PATH
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            ARCH=$(uname -m)
+            if [ "$ARCH" == "arm64" ]; then
+              SASS_ARCH="macos-arm64"
+            else
+              SASS_ARCH="macos-x64"
+            fi
+            curl -fsSL "https://github.com/sass/dart-sass/releases/download/${DART_SASS_VERSION}/dart-sass-${DART_SASS_VERSION}-${SASS_ARCH}.tar.gz" | tar -xz -C "$HOME"
+            echo "$HOME/dart-sass" >> $GITHUB_PATH
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            choco install sass
+          fi
+      - name: Expand Hugo cache directory on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: echo "HUGO_CACHEDIR=$env:LOCALAPPDATA\hugo_cache" >> $env:GITHUB_ENV
+      - name: Use Hugo cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HUGO_CACHEDIR }}
+          key: ${{ runner.os }}-${{ inputs.cache-key }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-${{ inputs.cache-key }}-
+      - name: Build
+        shell: bash
+        run: ${{ inputs.build-command }}

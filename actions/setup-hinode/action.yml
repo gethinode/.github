@@ -1,0 +1,34 @@
+name: Setup Hinode toolchain
+description: Go + Node + package manager (pnpm default, npm opt-in) with a frozen install.
+inputs:
+  package-manager:
+    description: pnpm (default) or npm
+    default: pnpm
+  node-version:
+    default: "22.x"
+  go-version:
+    default: ">1.0.0"
+runs:
+  using: composite
+  steps:
+    - name: Install Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: ${{ inputs.go-version }}
+    - name: Enable Corepack (pnpm)
+      if: ${{ inputs.package-manager == 'pnpm' }}
+      shell: bash
+      run: corepack enable
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: ${{ inputs.package-manager }}
+    - name: Install dependencies
+      shell: bash
+      run: |
+        if [ "${{ inputs.package-manager }}" = "pnpm" ]; then
+          pnpm install --frozen-lockfile
+        else
+          npm install
+        fi
