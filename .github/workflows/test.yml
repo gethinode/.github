@@ -30,6 +30,10 @@ jobs:
         with:
           package-manager: ${{ inputs.package-manager }}
           node-version: ${{ matrix.node-version }}
+      # Authenticate git so `hugo mod`/`go mod` can fetch private gethinode modules.
+      - name: Configure git for private modules
+        shell: bash
+        run: git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf "https://github.com/"
       # Some module exampleSites transpile SCSS via Dart Sass (Hinode v2). Install it
       # so those builds pass; a no-op cost for modules that don't need it.
       - name: Install Dart Sass

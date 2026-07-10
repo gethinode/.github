@@ -60,6 +60,9 @@ jobs:
         with:
           package-manager: ${{ inputs.package-manager }}
           node-version: ${{ matrix.node-version }}
+      - name: Configure git for private modules
+        shell: bash
+        run: git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf "https://github.com/"
       - name: Install Dart Sass
         env:
           DART_SASS_VERSION: ${{ inputs.dart-sass-version }}
