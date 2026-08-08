@@ -87,11 +87,27 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: echo "HUGO_CACHEDIR=$env:LOCALAPPDATA\hugo_cache" >> $env:GITHUB_ENV
+      # The suffix rotates weekly rather than per run. A run_id suffix saves a fresh entry every run and never
+      # reclaims the previous one, and a repository's Actions cache is a single ~10 GB LRU pool shared by every
+      # workflow in it — so those entries fill the pool and GitHub evicts by last access, taking out the small
+      # caches other jobs depend on rather than the ones causing the pressure.
+      #
+      # An ISO-week suffix caps each key prefix at roughly two live entries per branch (this week's and last
+      # week's). The matrix carries that multiple: os × node-version gives six prefixes here, so the bounded
+      # steady state is ~12 entries per branch, not two. A week of staleness costs nothing because Hugo
+      # validates cache entries by content checksum.
+      #
+      # %G/%V are the ISO year and week and must be paired — %Y/%V is wrong across a year boundary. The step
+      # needs an explicit bash shell because the Windows legs of the matrix default to pwsh.
+      - name: Compute the weekly cache epoch
+        id: cache-epoch
+        shell: bash
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       - name: Use Hugo cache
         uses: actions/cache@v6
         with:
           path: ${{ env.HUGO_CACHEDIR }}
-          key: ${{ runner.os }}-node${{ matrix.node-version }}-${{ inputs.cache-key }}-${{ github.run_id }}
+          key: ${{ runner.os }}-node${{ matrix.node-version }}-${{ inputs.cache-key }}-${{ steps.cache-epoch.outputs.week }}
           restore-keys: |
             ${{ runner.os }}-node${{ matrix.node-version }}-${{ inputs.cache-key }}-
       - name: Build
