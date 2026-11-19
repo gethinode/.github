@@ -5,6 +5,10 @@ on:
       package-manager:
         type: string
         default: pnpm
+      # semantic-release 26 requires Node 26.13 or later.
+      node-version:
+        type: string
+        default: "26.x"
     secrets:
       SEMANTIC_RELEASE_GIT:
         required: true
@@ -23,6 +27,7 @@ jobs:
       - uses: gethinode/.github/actions/setup-hinode@v1
         with:
           package-manager: ${{ inputs.package-manager }}
+          node-version: ${{ inputs.node-version }}
       - name: Create release
         shell: bash
         env:
