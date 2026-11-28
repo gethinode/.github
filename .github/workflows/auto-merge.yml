@@ -17,14 +17,30 @@ jobs:
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
+      - name: Check auto-merge eligibility for all updated dependencies
+        id: auto-merge-eligibility
+        if: ${{ steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor' }}
+        env:
+          UPDATED_DEPENDENCIES: ${{ steps.metadata.outputs.updated-dependencies-json }}
+        run: |
+          if jq --exit-status '
+            type == "array" and length > 0 and all(.[];
+              .updateType == "version-update:semver-patch" or
+              .updateType == "version-update:semver-minor"
+            )
+          ' <<< "$UPDATED_DEPENDENCIES" > /dev/null; then
+            echo 'eligible=true' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Enable auto-merge for Dependabot PRs
+        if: ${{ steps.auto-merge-eligibility.outputs.eligible == 'true' }}
         run: gh pr merge --auto --merge "$PR_URL"
         env:
           PR_URL: ${{github.event.pull_request.html_url}}
           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
 
       - name: Approve patch and minor updates
-        if: ${{steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor'}}
+        if: ${{ steps.auto-merge-eligibility.outputs.eligible == 'true' }}
         run: gh pr review "$PR_URL" --approve -b "I'm **approving** this pull request because **it includes a patch or minor update**"
         env:
           PR_URL: ${{github.event.pull_request.html_url}}
@@ -41,7 +57,7 @@ jobs:
 
   review-mod-update-pr:
     runs-on: ubuntu-latest
-    if: ${{ github.event.pull_request.title == 'Update Hugo module dependencies' }}
+    if: ${{ github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.title == 'Update Hugo module dependencies' }}
     steps:
       - name: Enable auto-merge for mod-update PRs
         run: gh pr merge --auto --merge "$PR_URL"
