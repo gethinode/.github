@@ -9,51 +9,141 @@ permissions:
 jobs:
   review-dependabot-pr:
     runs-on: ubuntu-latest
+    concurrency:
+      group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
     steps:
       - name: Dependabot metadata
         id: metadata
+        continue-on-error: true
         uses: dependabot/fetch-metadata@v3
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
-      - name: Check auto-merge eligibility for all updated dependencies
+      - name: Verify auto-merge eligibility for this pull request head
         id: auto-merge-eligibility
-        if: ${{ steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor' }}
+        if: ${{ steps.metadata.outcome == 'success' && (steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor') }}
+        shell: bash
         env:
           UPDATED_DEPENDENCIES: ${{ steps.metadata.outputs.updated-dependencies-json }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if jq --exit-status '
-            type == "array" and length > 0 and all(.[];
+          if ! jq --slurp --exit-status '
+            length == 1 and (.[0] | type == "array" and length > 0 and all(.[];
               .updateType == "version-update:semver-patch" or
               .updateType == "version-update:semver-minor"
-            )
+            ))
           ' <<< "$UPDATED_DEPENDENCIES" > /dev/null; then
-            echo 'eligible=true' >> "$GITHUB_OUTPUT"
+            echo 'reason=At least one dependency could not be verified as a patch or minor update.' >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          # fetch-metadata classifies only the first commit, including for grouped updates.
+          if ! gh api "repos/$REPO/pulls/$PR_NUMBER/commits?per_page=2" |
+              jq --exit-status --arg head "$HEAD_SHA" '
+                type == "array" and length == 1 and (.[0] |
+                  .sha == $head and
+                  .author.login == "dependabot[bot]" and
+                  .committer.login == "web-flow" and
+                  .commit.verification.verified == true and
+                  (.parents | type == "array" and length == 1))
+              ' > /dev/null; then
+            echo 'reason=The PR head is not a single verified Dependabot commit.' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo 'eligible=true' >> "$GITHUB_OUTPUT"
 
       - name: Enable auto-merge for Dependabot PRs
         if: ${{ steps.auto-merge-eligibility.outputs.eligible == 'true' }}
-        run: gh pr merge --auto --merge "$PR_URL"
+        run: gh pr merge --auto --merge --match-head-commit "$HEAD_SHA" "$PR_URL"
         env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_URL: ${{github.event.pull_request.html_url}}
           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
 
       - name: Approve patch and minor updates
         if: ${{ steps.auto-merge-eligibility.outputs.eligible == 'true' }}
-        run: gh pr review "$PR_URL" --approve -b "I'm **approving** this pull request because **it includes a patch or minor update**"
-        env:
-          PR_URL: ${{github.event.pull_request.html_url}}
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-
-      - name: Comment on major updates of any dependencies
-        if: ${{steps.metadata.outputs.update-type == 'version-update:semver-major'}}
         run: |
-          gh pr comment "$PR_URL" --body "I'm **not approving** this PR because **it includes a major update of a dependency**"
-          gh pr edit "$PR_URL" --add-label "requires-manual-qa"
+          if ! gh api --silent "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+              -f commit_id="$HEAD_SHA" -f event=APPROVE \
+              -f body='Verified patch or minor Dependabot update.'; then
+            echo '::warning::GitHub Actions could not record its review.'
+          fi
         env:
-          PR_URL: ${{github.event.pull_request.html_url}}
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Flag for manual review
+        if: ${{ !cancelled() && steps.auto-merge-eligibility.outputs.eligible != 'true' }}
+        shell: bash
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REASON: ${{ steps.auto-merge-eligibility.outputs.reason }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+        run: |
+          # shellcheck disable=SC2016 # Variables are bound by GraphQL.
+          query='query($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) {
+              pullRequest(number: $number) {
+                state headRefOid isInMergeQueue autoMergeRequest { enabledBy { login } }
+              }
+            }
+          }'
+          read_pr() {
+            gh api graphql -f query="$query" -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F number="$PR_NUMBER" |
+              jq -ce '.data.repository.pullRequest |
+                select(type == "object" and (.headRefOid | type) == "string"
+                  and (.isInMergeQueue | type) == "boolean"
+                  and (.state == "OPEN" or .state == "CLOSED" or .state == "MERGED")
+                  and has("autoMergeRequest"))'
+          }
+
+          disarm_error=''
+          if ! pr=$(read_pr); then
+            disarm_error='could not read the current pull request state'
+          elif ! jq -e --arg head "$HEAD_SHA" '.state == "OPEN" and .headRefOid == $head' <<< "$pr" > /dev/null; then
+            echo 'Skipping a closed pull request or a superseded event.'
+            exit 0
+          elif jq -e '.isInMergeQueue' <<< "$pr" > /dev/null; then
+            disarm_error='the pull request is already in the merge queue'
+          elif jq -e '.autoMergeRequest != null' <<< "$pr" > /dev/null; then
+            case "$(jq -r '.autoMergeRequest.enabledBy.login // ""' <<< "$pr")" in
+              github-actions | 'github-actions[bot]' | app/github-actions)
+                if gh pr merge --disable-auto "$PR_URL" && pr=$(read_pr) &&
+                    jq -e '.autoMergeRequest == null and (.isInMergeQueue | not)' <<< "$pr" > /dev/null; then
+                  echo 'GitHub Actions auto-merge was disabled.'
+                else
+                  disarm_error='could not confirm that GitHub Actions auto-merge was disabled'
+                fi
+                ;;
+              '') disarm_error='could not identify who enabled auto-merge' ;;
+              *) echo 'Auto-merge enabled outside this workflow remains in place.' ;;
+            esac
+          fi
+
+          case "$UPDATE_TYPE" in
+            version-update:semver-major) reason='Major dependency update.' ;;
+            *) reason="${REASON:-Dependabot metadata did not establish auto-merge eligibility.}" ;;
+          esac
+          if ! gh pr edit "$PR_URL" --add-label 'requires-manual-qa'; then
+            echo '::warning::The requires-manual-qa label could not be applied.'
+          fi
+          gh pr comment "$PR_URL" --body "Manual QA required. $reason"
+          if [ -n "$disarm_error" ]; then
+            echo "::error::Auto-merge state requires manual attention: $disarm_error."
+            exit 1
+          fi
 
   review-mod-update-pr:
     runs-on: ubuntu-latest
