@@ -1,6 +1,11 @@
 # Source: https://nicolasiensen.github.io/2022-07-23-automating-dependency-updates-with-dependabot-github-auto-merge-and-github-actions/
 name: PR auto-merge
-on: workflow_call
+on:
+  workflow_call:
+    secrets:
+      AUTOMERGE_APP_PRIVATE_KEY:
+        description: Private key for the calling repository's auto-merge GitHub App.
+        required: false
 
 permissions:
   pull-requests: write
@@ -17,7 +22,7 @@ jobs:
       - name: Dependabot metadata
         id: metadata
         continue-on-error: true
-        uses: dependabot/fetch-metadata@v3
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
@@ -58,30 +63,21 @@ jobs:
 
           echo 'eligible=true' >> "$GITHUB_OUTPUT"
 
-      - name: Enable auto-merge for Dependabot PRs
-        if: ${{ steps.auto-merge-eligibility.outputs.eligible == 'true' }}
-        run: gh pr merge --auto --merge --match-head-commit "$HEAD_SHA" "$PR_URL"
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_URL: ${{github.event.pull_request.html_url}}
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+      - name: Mint the repository-scoped auto-merge App token
+        id: app-token
+        if: ${{ steps.auto-merge-eligibility.outputs.eligible == 'true' && vars.AUTOMERGE_APP_CLIENT_ID != '' && vars.AUTOMERGE_APP_SLUG != '' }}
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.AUTOMERGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.repository }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
 
-      - name: Approve patch and minor updates
-        if: ${{ steps.auto-merge-eligibility.outputs.eligible == 'true' }}
-        run: |
-          if ! gh api --silent "repos/$REPO/pulls/$PR_NUMBER/reviews" \
-              -f commit_id="$HEAD_SHA" -f event=APPROVE \
-              -f body='Verified patch or minor Dependabot update.'; then
-            echo '::warning::GitHub Actions could not record its review.'
-          fi
-        env:
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Flag for manual review
-        if: ${{ !cancelled() && steps.auto-merge-eligibility.outputs.eligible != 'true' }}
+      - name: Reconcile Dependabot auto-merge state
+        id: auto-merge-state
+        if: ${{ !cancelled() }}
         shell: bash
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -91,12 +87,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REASON: ${{ steps.auto-merge-eligibility.outputs.reason }}
           UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          ELIGIBLE: ${{ steps.auto-merge-eligibility.outputs.eligible }}
+          APP_SLUG: ${{ vars.AUTOMERGE_APP_SLUG }}
+          MINTED_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          APP_TOKEN_READY: ${{ steps.app-token.outcome == 'success' && steps.app-token.outputs.token != '' }}
         run: |
           # shellcheck disable=SC2016 # Variables are bound by GraphQL.
           query='query($owner: String!, $name: String!, $number: Int!) {
             repository(owner: $owner, name: $name) {
               pullRequest(number: $number) {
-                state headRefOid isInMergeQueue autoMergeRequest { enabledBy { login } }
+                state headRefOid isInMergeQueue autoMergeRequest { enabledBy { __typename login } }
               }
             }
           }'
@@ -109,6 +109,16 @@ jobs:
                   and has("autoMergeRequest"))'
           }
 
+          should_arm=false
+          configuration_error=''
+          if [ "$ELIGIBLE" = true ]; then
+            if [ "$APP_TOKEN_READY" = true ] && [ -n "$APP_SLUG" ] && [ "$MINTED_APP_SLUG" = "$APP_SLUG" ]; then
+              should_arm=true
+            else
+              configuration_error='A token for the configured auto-merge App was unavailable.'
+            fi
+          fi
+
           disarm_error=''
           if ! pr=$(read_pr); then
             disarm_error='could not read the current pull request state'
@@ -116,26 +126,60 @@ jobs:
             echo 'Skipping a closed pull request or a superseded event.'
             exit 0
           elif jq -e '.isInMergeQueue' <<< "$pr" > /dev/null; then
+            if [ "$should_arm" = true ]; then
+              echo 'The eligible pull request is already in the merge queue.'
+              exit 0
+            fi
             disarm_error='the pull request is already in the merge queue'
           elif jq -e '.autoMergeRequest != null' <<< "$pr" > /dev/null; then
-            case "$(jq -r '.autoMergeRequest.enabledBy.login // ""' <<< "$pr")" in
-              github-actions | 'github-actions[bot]' | app/github-actions)
-                if gh pr merge --disable-auto "$PR_URL" && pr=$(read_pr) &&
-                    jq -e '.autoMergeRequest == null and (.isInMergeQueue | not)' <<< "$pr" > /dev/null; then
-                  echo 'GitHub Actions auto-merge was disabled.'
-                else
-                  disarm_error='could not confirm that GitHub Actions auto-merge was disabled'
-                fi
+            armer=$(jq -r '.autoMergeRequest.enabledBy | [.__typename // "", .login // ""] | join(":")' <<< "$pr")
+            disarm=false
+            case "$armer" in
+              Bot:github-actions | 'Bot:github-actions[bot]' | Bot:app/github-actions)
+                disarm=true
                 ;;
-              '') disarm_error='could not identify who enabled auto-merge' ;;
-              *) echo 'Auto-merge enabled outside this workflow remains in place.' ;;
+              :* | *:) disarm_error='could not identify who enabled auto-merge' ;;
+              "Bot:$APP_SLUG" | "Bot:${APP_SLUG}[bot]" | "Bot:app/$APP_SLUG")
+                if [ "$should_arm" = true ]; then
+                  echo 'Auto-merge is already enabled by the configured App.'
+                  echo 'review=true' >> "$GITHUB_OUTPUT"
+                  exit 0
+                fi
+                disarm=true
+                ;;
+              *)
+                echo 'Auto-merge enabled outside this workflow remains in place.'
+                if [ "$should_arm" = true ]; then exit 0; fi
+                ;;
             esac
+            if [ "$disarm" = true ]; then
+              if gh pr merge --disable-auto "$PR_URL" && pr=$(read_pr) &&
+                  jq -e '.autoMergeRequest == null and (.isInMergeQueue | not)' <<< "$pr" > /dev/null; then
+                echo 'Workflow-owned auto-merge was disabled.'
+                if ! jq -e --arg head "$HEAD_SHA" '.state == "OPEN" and .headRefOid == $head' <<< "$pr" > /dev/null; then
+                  echo 'Skipping the rest of a closed pull request or a superseded event.'
+                  exit 0
+                fi
+              else
+                disarm_error='could not confirm that workflow-owned auto-merge was disabled'
+              fi
+            fi
           fi
 
-          case "$UPDATE_TYPE" in
-            version-update:semver-major) reason='Major dependency update.' ;;
-            *) reason="${REASON:-Dependabot metadata did not establish auto-merge eligibility.}" ;;
-          esac
+          if [ "$should_arm" = true ] && [ -z "$disarm_error" ]; then
+            printf '%s\n' 'ready=true' 'review=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$configuration_error" ]; then
+            reason="$configuration_error"
+          elif [ -n "$disarm_error" ]; then
+            reason='Existing auto-merge could not be reconciled.'
+          elif [ "$UPDATE_TYPE" = version-update:semver-major ]; then
+            reason='Major dependency update.'
+          else
+            reason="${REASON:-Dependabot metadata did not establish auto-merge eligibility.}"
+          fi
           if ! gh pr edit "$PR_URL" --add-label 'requires-manual-qa'; then
             echo '::warning::The requires-manual-qa label could not be applied.'
           fi
@@ -144,6 +188,37 @@ jobs:
             echo "::error::Auto-merge state requires manual attention: $disarm_error."
             exit 1
           fi
+          if [ -n "$configuration_error" ]; then
+            echo "::error::$configuration_error Set the App client ID, slug and private key for this repository."
+            exit 1
+          fi
+
+      - name: Enable auto-merge for Dependabot PRs
+        if: ${{ steps.auto-merge-state.outputs.ready == 'true' }}
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo '::error::The auto-merge App did not return an installation token.'
+            exit 1
+          fi
+          gh pr merge --auto --merge --match-head-commit "$HEAD_SHA" "$PR_URL"
+
+      - name: Approve patch and minor updates
+        if: ${{ steps.auto-merge-state.outputs.review == 'true' }}
+        run: |
+          if ! gh api --silent "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+              -f commit_id="$HEAD_SHA" -f event=APPROVE \
+              -f body='Verified patch or minor Dependabot update.'; then
+            echo '::warning::GitHub Actions could not record its review.'
+          fi
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   review-mod-update-pr:
     runs-on: ubuntu-latest
